@@ -6,6 +6,7 @@ from matplotlib import pyplot as plt
 from batchnorm import ConvolutionalBatchNormalizer
 
 filenames = sorted(glob.glob("../colornet/*/*.jpg"))
+
 batch_size = 1
 num_epochs = 1e+9
 
@@ -27,6 +28,8 @@ def read_my_file_format(filename_queue, randomize=False):
 
 
 def input_pipeline(filenames, batch_size, num_epochs=None):
+    if not isinstance(filenames, tf.Tensor):
+        filenames = tf.constant(filenames, dtype=tf.string)
     filename_queue = tf.train.string_input_producer(
         filenames, num_epochs=num_epochs, shuffle=False)
     example = read_my_file_format(filename_queue, randomize=False)
@@ -138,7 +141,7 @@ def yuv2rgb(yuv):
     """
     Convert YUV image into RGB https://en.wikipedia.org/wiki/YUV
     """
-    yuv = tf.mul(yuv, 255)
+    yuv = tf.multiply(yuv, 255)
     yuv2rgb_filter = tf.constant(
         [[[[1., 1., 1.],
            [0., -0.34413999, 1.77199996],
@@ -147,7 +150,7 @@ def yuv2rgb(yuv):
     temp = tf.nn.conv2d(yuv, yuv2rgb_filter, [1, 1, 1, 1], 'SAME')
     temp = tf.nn.bias_add(temp, yuv2rgb_bias)
     temp = tf.maximum(temp, tf.zeros(temp.get_shape(), dtype=tf.float32))
-    temp = tf.minimum(temp, tf.mul(
+    temp = tf.minimum(temp, tf.multiply(
         tf.ones(temp.get_shape(), dtype=tf.float32), 255))
     temp = tf.div(temp, 255)
     return temp
@@ -182,7 +185,7 @@ colorimage_yuv = rgb2yuv(colorimage)
 grayscale = tf.image.rgb_to_grayscale(colorimage)
 grayscale_rgb = tf.image.grayscale_to_rgb(grayscale)
 grayscale_yuv = rgb2yuv(grayscale_rgb)
-grayscale = tf.concat(3, [grayscale, grayscale, grayscale])
+grayscale = tf.concat([grayscale, grayscale, grayscale], 3)
 
 tf.import_graph_def(graph_def, input_map={"images": grayscale})
 
@@ -205,50 +208,50 @@ tensors = {
 
 # Construct model
 pred = colornet(tensors)
-pred_yuv = tf.concat(3, [tf.split(3, 3, grayscale_yuv)[0], pred])
+pred_yuv = tf.concat([tf.split(grayscale_yuv, 3, 3)[0], pred], 3)
 pred_rgb = yuv2rgb(pred_yuv)
 
-loss = tf.square(tf.sub(pred, tf.concat(
-    3, [tf.split(3, 3, colorimage_yuv)[1], tf.split(3, 3, colorimage_yuv)[2]])))
+loss = tf.square(tf.subtract(pred, tf.concat(
+    [tf.split(colorimage_yuv, 3, 3)[1], tf.split(colorimage_yuv, 3, 3)[2]], 3)))
 
 if uv == 1:
-    loss = tf.split(3, 2, loss)[0]
+    loss = tf.split(loss, 2, 3)[0]
 elif uv == 2:
-    loss = tf.split(3, 2, loss)[1]
+    loss = tf.split(loss, 2, 3)[1]
 else:
-    loss = (tf.split(3, 2, loss)[0] + tf.split(3, 2, loss)[1]) / 2
+    loss = (tf.split(loss, 2, 3)[0] + tf.split(loss, 2, 3)[1]) / 2
 
-if phase_train:
-    optimizer = tf.train.GradientDescentOptimizer(0.0001)
-    opt = optimizer.minimize(
-        loss, global_step=global_step, gate_gradients=optimizer.GATE_NONE)
+optimizer = tf.train.GradientDescentOptimizer(0.0001)
+opt = optimizer.minimize(
+    loss, global_step=global_step, gate_gradients=optimizer.GATE_NONE)
 
 # Summaries
-tf.histogram_summary("weights1", weights["wc1"])
-tf.histogram_summary("weights2", weights["wc2"])
-tf.histogram_summary("weights3", weights["wc3"])
-tf.histogram_summary("weights4", weights["wc4"])
-tf.histogram_summary("weights5", weights["wc5"])
-tf.histogram_summary("weights6", weights["wc6"])
-tf.histogram_summary("instant_loss", tf.reduce_mean(loss))
-tf.image_summary("colorimage", colorimage, max_images=1)
-tf.image_summary("pred_rgb", pred_rgb, max_images=1)
-tf.image_summary("grayscale", grayscale_rgb, max_images=1)
+tf.summary.histogram("weights1", weights["wc1"])
+tf.summary.histogram("weights2", weights["wc2"])
+tf.summary.histogram("weights3", weights["wc3"])
+tf.summary.histogram("weights4", weights["wc4"])
+tf.summary.histogram("weights5", weights["wc5"])
+tf.summary.histogram("weights6", weights["wc6"])
+tf.summary.histogram("instant_loss", tf.reduce_mean(loss))
+tf.summary.image("colorimage", colorimage, max_outputs=1)
+tf.summary.image("pred_rgb", pred_rgb, max_outputs=1)
+tf.summary.image("grayscale", grayscale_rgb, max_outputs=1)
 
 # Saver.
 saver = tf.train.Saver()
 
 # Create the graph, etc.
-init_op = tf.initialize_all_variables()
+global_init_op = tf.global_variables_initializer()
+local_init_op = tf.local_variables_initializer()
 
 # Create a session for running operations in the Graph.
 sess = tf.Session()
 
 # Initialize the variables.
-sess.run(init_op)
+sess.run([global_init_op, local_init_op])
 
-merged = tf.merge_all_summaries()
-writer = tf.train.SummaryWriter("tb_log", sess.graph_def)
+merged = tf.summary.merge_all()
+writer = tf.summary.FileWriter("tb_log", sess.graph)
 
 # Start input enqueue threads.
 coord = tf.train.Coordinator()
@@ -265,10 +268,10 @@ try:
         if step % 1 == 0:
             pred_, pred_rgb_, colorimage_, grayscale_rgb_, cost, merged_ = sess.run(
                 [pred, pred_rgb, colorimage, grayscale_rgb, loss, merged], feed_dict={phase_train: False, uv: 3})
-            print {
+            print({
                 "step": step,
                 "cost": np.mean(cost)
-            }
+            })
             if step % 1000 == 0:
                 summary_image = concat_images(grayscale_rgb_[0], pred_rgb_[0])
                 summary_image = concat_images(summary_image, colorimage_[0])
