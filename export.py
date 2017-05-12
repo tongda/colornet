@@ -39,6 +39,23 @@ with tf.Session() as sess:
     
     if not os.path.exists('weights'):
             os.mkdir('weights')
+
+    print([t.name for t in tensors])
+
+    param_mapping = dict(zip([t.name for t in tensors], results))
+    exp = 0.001
+    for i in range(5):
+        weight = param_mapping["import/color{}/filter:0".format(i)]
+        gamma = param_mapping["import/color{0}/color{0}_bn/gamma:0".format(i)]
+        beta = param_mapping["import/color{0}/color{0}_bn/beta:0".format(i)]
+        mean = param_mapping["import/color{0}/color{0}_bn/mean:0".format(i)]
+        var = param_mapping["import/color{0}/color{0}_bn/variance:0".format(i)]
+        a = gamma / np.sqrt(var + exp)
+        bias = -a * mean
+        weight = a * weight
+        param_mapping["import/color{}/filter:0".format(i)] = weight
+        param_mapping["import/color{}/biases:0".format(i)] = bias
+
     for t, r in zip(tensors, results):
         name = '_'.join(t.name.split(":")[0].split("/")[1:])
         
@@ -47,4 +64,4 @@ with tf.Session() as sess:
 
         with open('weights/' + name, 'wb') as f:
             r.tofile(f)
-            print("{} write finished.".format(name))
+            print("{} with shape {} write finished.".format(name, np.shape(r)))
