@@ -56,10 +56,10 @@ with tf.Session() as sess:
         param_mapping["import/color{}/filter:0".format(i)] = weight
         param_mapping["import/color{}/biases:0".format(i)] = bias
 
-    for t, r in zip(tensors, results):
-        name = '_'.join(t.name.split(":")[0].split("/")[1:])
+    for t, r in param_mapping.items():
+        name = '_'.join(t.split(":")[0].split("/")[1:])
         
-        if 'filter' in t.name:
+        if 'filter' in t:
             r = np.transpose(r, [3, 0, 1, 2])
 
         with open('weights/' + name, 'wb') as f:
