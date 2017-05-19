@@ -26,6 +26,7 @@ print(type(tf.get_default_graph().get_operation_by_name(
 with tf.Session() as sess:
     tensors = chain(
         *[op.outputs for op in tf.get_default_graph().get_operations()])
+    # print([t.name for t in tensors])
     patterns = [re.compile(r"import/vgg16/conv\d_\d/filter"),
                 re.compile(r"import/vgg16/conv\d_\d/biases"),
                 re.compile(r"import/color\d/filter"),
@@ -40,6 +41,10 @@ with tf.Session() as sess:
                 re.compile(r"import/uv/uv_bn/beta"),
                 re.compile(r"import/uv/uv_bn/mean"),
                 re.compile(r"import/uv/uv_bn/variance"),
+                re.compile(r"import/pool\d_bn/beta"),
+                re.compile(r"import/pool\d_bn/gamma"),
+                re.compile(r"import/pool\d_bn/mean"),
+                re.compile(r"import/pool\d_bn/variance"),
                 ]
     tensors = [t for t in tensors if any(p.match(t.name) is not None for p in patterns)]
     results = sess.run(tensors)
@@ -58,7 +63,7 @@ with tf.Session() as sess:
         mean = param_mapping["import/color{0}/color{0}_bn/mean:0".format(i)]
         var = param_mapping["import/color{0}/color{0}_bn/variance:0".format(i)]
         a = gamma / np.sqrt(var + exp)
-        bias = -a * mean
+        bias = beta - a * mean
         weight = a * weight
         param_mapping["import/color{}/filter:0".format(i)] = weight
         param_mapping["import/color{}/biases:0".format(i)] = bias
@@ -71,7 +76,7 @@ with tf.Session() as sess:
     uv_var = param_mapping["import/uv/uv_bn/variance:0"]
 
     uv_a = uv_gamma / np.sqrt(uv_var + exp)
-    uv_bias = -uv_a * uv_mean
+    uv_bias = uv_beta - uv_a * uv_mean
     uv_weight = uv_a * uv_weight
     param_mapping["import/uv/filter:0"] = uv_weight
     param_mapping["import/uv/biases:0"] = uv_bias

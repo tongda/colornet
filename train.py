@@ -156,141 +156,126 @@ def yuv2rgb(yuv):
     return temp
 
 
-with open("vgg/tensorflow-vgg16/vgg16-20160129.tfmodel", mode='rb') as f:
-    fileContent = f.read()
-
-graph_def = tf.GraphDef()
-graph_def.ParseFromString(fileContent)
-
-with tf.variable_scope('colornet'):
-    # Store layers weight
-    weights = {
-        # 1x1 conv, 512 inputs, 256 outputs
-        'wc1': tf.Variable(tf.truncated_normal([1, 1, 512, 256], stddev=0.01)),
-        # 3x3 conv, 512 inputs, 128 outputs
-        'wc2': tf.Variable(tf.truncated_normal([3, 3, 256, 128], stddev=0.01)),
-        # 3x3 conv, 256 inputs, 64 outputs
-        'wc3': tf.Variable(tf.truncated_normal([3, 3, 128, 64], stddev=0.01)),
-        # 3x3 conv, 128 inputs, 3 outputs
-        'wc4': tf.Variable(tf.truncated_normal([3, 3, 64, 3], stddev=0.01)),
-        # 3x3 conv, 6 inputs, 3 outputs
-        'wc5': tf.Variable(tf.truncated_normal([3, 3, 3, 3], stddev=0.01)),
-        # 3x3 conv, 3 inputs, 2 outputs
-        'wc6': tf.Variable(tf.truncated_normal([3, 3, 3, 2], stddev=0.01)),
+def main():
+    with open("vgg/tensorflow-vgg16/vgg16-20160129.tfmodel", mode='rb') as f:
+        fileContent = f.read()
+    graph_def = tf.GraphDef()
+    graph_def.ParseFromString(fileContent)
+    with tf.variable_scope('colornet'):
+        # Store layers weight
+        weights = {
+            # 1x1 conv, 512 inputs, 256 outputs
+            'wc1': tf.Variable(tf.truncated_normal([1, 1, 512, 256], stddev=0.01)),
+            # 3x3 conv, 512 inputs, 128 outputs
+            'wc2': tf.Variable(tf.truncated_normal([3, 3, 256, 128], stddev=0.01)),
+            # 3x3 conv, 256 inputs, 64 outputs
+            'wc3': tf.Variable(tf.truncated_normal([3, 3, 128, 64], stddev=0.01)),
+            # 3x3 conv, 128 inputs, 3 outputs
+            'wc4': tf.Variable(tf.truncated_normal([3, 3, 64, 3], stddev=0.01)),
+            # 3x3 conv, 6 inputs, 3 outputs
+            'wc5': tf.Variable(tf.truncated_normal([3, 3, 3, 3], stddev=0.01)),
+            # 3x3 conv, 3 inputs, 2 outputs
+            'wc6': tf.Variable(tf.truncated_normal([3, 3, 3, 2], stddev=0.01)),
+        }
+    colorimage = input_pipeline(filenames, batch_size, num_epochs=num_epochs)
+    colorimage_yuv = rgb2yuv(colorimage)
+    grayscale = tf.image.rgb_to_grayscale(colorimage)
+    grayscale_rgb = tf.image.grayscale_to_rgb(grayscale)
+    grayscale_yuv = rgb2yuv(grayscale_rgb)
+    grayscale = tf.concat([grayscale, grayscale, grayscale], 3)
+    tf.import_graph_def(graph_def, input_map={"images": grayscale})
+    graph = tf.get_default_graph()
+    with tf.variable_scope('vgg'):
+        conv1_2 = graph.get_tensor_by_name("import/conv1_2/Relu:0")
+        conv2_2 = graph.get_tensor_by_name("import/conv2_2/Relu:0")
+        conv3_3 = graph.get_tensor_by_name("import/conv3_3/Relu:0")
+        conv4_3 = graph.get_tensor_by_name("import/conv4_3/Relu:0")
+    tensors = {
+        "conv1_2": conv1_2,
+        "conv2_2": conv2_2,
+        "conv3_3": conv3_3,
+        "conv4_3": conv4_3,
+        "grayscale": grayscale,
+        "weights": weights
     }
+    # Construct model
+    pred = colornet(tensors)
+    pred_yuv = tf.concat([tf.split(grayscale_yuv, 3, 3)[0], pred], 3)
+    pred_rgb = yuv2rgb(pred_yuv)
+    loss = tf.square(tf.subtract(pred, tf.concat(
+        [tf.split(colorimage_yuv, 3, 3)[1], tf.split(colorimage_yuv, 3, 3)[2]], 3)))
+    if uv == 1:
+        loss = tf.split(loss, 2, 3)[0]
+    elif uv == 2:
+        loss = tf.split(loss, 2, 3)[1]
+    else:
+        loss = (tf.split(loss, 2, 3)[0] + tf.split(loss, 2, 3)[1]) / 2
+    optimizer = tf.train.GradientDescentOptimizer(0.0001)
+    opt = optimizer.minimize(
+        loss, global_step=global_step, gate_gradients=optimizer.GATE_NONE)
+    # Summaries
+    tf.summary.histogram("weights1", weights["wc1"])
+    tf.summary.histogram("weights2", weights["wc2"])
+    tf.summary.histogram("weights3", weights["wc3"])
+    tf.summary.histogram("weights4", weights["wc4"])
+    tf.summary.histogram("weights5", weights["wc5"])
+    tf.summary.histogram("weights6", weights["wc6"])
+    tf.summary.histogram("instant_loss", tf.reduce_mean(loss))
+    tf.summary.image("colorimage", colorimage, max_outputs=1)
+    tf.summary.image("pred_rgb", pred_rgb, max_outputs=1)
+    tf.summary.image("grayscale", grayscale_rgb, max_outputs=1)
+    # Saver.
+    saver = tf.train.Saver()
+    # Create the graph, etc.
+    global_init_op = tf.global_variables_initializer()
+    local_init_op = tf.local_variables_initializer()
+    # Create a session for running operations in the Graph.
+    sess = tf.Session()
+    # Initialize the variables.
+    sess.run([global_init_op, local_init_op])
+    merged = tf.summary.merge_all()
+    writer = tf.summary.FileWriter("tb_log", sess.graph)
+    # Start input enqueue threads.
+    coord = tf.train.Coordinator()
+    threads = tf.train.start_queue_runners(sess=sess, coord=coord)
+    try:
+        while not coord.should_stop():
+            # Run training steps
+            training_opt = sess.run(opt, feed_dict={phase_train: True, uv: 1})
+            training_opt = sess.run(opt, feed_dict={phase_train: True, uv: 2})
 
-colorimage = input_pipeline(filenames, batch_size, num_epochs=num_epochs)
-colorimage_yuv = rgb2yuv(colorimage)
+            step = sess.run(global_step)
 
-grayscale = tf.image.rgb_to_grayscale(colorimage)
-grayscale_rgb = tf.image.grayscale_to_rgb(grayscale)
-grayscale_yuv = rgb2yuv(grayscale_rgb)
-grayscale = tf.concat([grayscale, grayscale, grayscale], 3)
+            if step % 1 == 0:
+                pred_, pred_rgb_, colorimage_, grayscale_rgb_, cost, merged_ = sess.run(
+                    [pred, pred_rgb, colorimage, grayscale_rgb, loss, merged], feed_dict={phase_train: False, uv: 3})
+                print({
+                    "step": step,
+                    "cost": np.mean(cost)
+                })
+                if step % 1000 == 0:
+                    summary_image = concat_images(grayscale_rgb_[0], pred_rgb_[0])
+                    summary_image = concat_images(summary_image, colorimage_[0])
+                    plt.imsave("summary/" + str(step) + "_0", summary_image)
 
-tf.import_graph_def(graph_def, input_map={"images": grayscale})
+                sys.stdout.flush()
+                writer.add_summary(merged_, step)
+                writer.flush()
+            if step % 100000 == 99998:
+                save_path = saver.save(sess, "model.ckpt")
+                print("Model saved in file: %s" % save_path)
+                sys.stdout.flush()
 
-graph = tf.get_default_graph()
+    except tf.errors.OutOfRangeError:
+        print('Done training -- epoch limit reached')
+    finally:
+        # When done, ask the threads to stop.
+        coord.request_stop()
 
-with tf.variable_scope('vgg'):
-    conv1_2 = graph.get_tensor_by_name("import/conv1_2/Relu:0")
-    conv2_2 = graph.get_tensor_by_name("import/conv2_2/Relu:0")
-    conv3_3 = graph.get_tensor_by_name("import/conv3_3/Relu:0")
-    conv4_3 = graph.get_tensor_by_name("import/conv4_3/Relu:0")
+    # Wait for threads to finish.
+    coord.join(threads)
+    sess.close()
 
-tensors = {
-    "conv1_2": conv1_2,
-    "conv2_2": conv2_2,
-    "conv3_3": conv3_3,
-    "conv4_3": conv4_3,
-    "grayscale": grayscale,
-    "weights": weights
-}
 
-# Construct model
-pred = colornet(tensors)
-pred_yuv = tf.concat([tf.split(grayscale_yuv, 3, 3)[0], pred], 3)
-pred_rgb = yuv2rgb(pred_yuv)
-
-loss = tf.square(tf.subtract(pred, tf.concat(
-    [tf.split(colorimage_yuv, 3, 3)[1], tf.split(colorimage_yuv, 3, 3)[2]], 3)))
-
-if uv == 1:
-    loss = tf.split(loss, 2, 3)[0]
-elif uv == 2:
-    loss = tf.split(loss, 2, 3)[1]
-else:
-    loss = (tf.split(loss, 2, 3)[0] + tf.split(loss, 2, 3)[1]) / 2
-
-optimizer = tf.train.GradientDescentOptimizer(0.0001)
-opt = optimizer.minimize(
-    loss, global_step=global_step, gate_gradients=optimizer.GATE_NONE)
-
-# Summaries
-tf.summary.histogram("weights1", weights["wc1"])
-tf.summary.histogram("weights2", weights["wc2"])
-tf.summary.histogram("weights3", weights["wc3"])
-tf.summary.histogram("weights4", weights["wc4"])
-tf.summary.histogram("weights5", weights["wc5"])
-tf.summary.histogram("weights6", weights["wc6"])
-tf.summary.histogram("instant_loss", tf.reduce_mean(loss))
-tf.summary.image("colorimage", colorimage, max_outputs=1)
-tf.summary.image("pred_rgb", pred_rgb, max_outputs=1)
-tf.summary.image("grayscale", grayscale_rgb, max_outputs=1)
-
-# Saver.
-saver = tf.train.Saver()
-
-# Create the graph, etc.
-global_init_op = tf.global_variables_initializer()
-local_init_op = tf.local_variables_initializer()
-
-# Create a session for running operations in the Graph.
-sess = tf.Session()
-
-# Initialize the variables.
-sess.run([global_init_op, local_init_op])
-
-merged = tf.summary.merge_all()
-writer = tf.summary.FileWriter("tb_log", sess.graph)
-
-# Start input enqueue threads.
-coord = tf.train.Coordinator()
-threads = tf.train.start_queue_runners(sess=sess, coord=coord)
-
-try:
-    while not coord.should_stop():
-        # Run training steps
-        training_opt = sess.run(opt, feed_dict={phase_train: True, uv: 1})
-        training_opt = sess.run(opt, feed_dict={phase_train: True, uv: 2})
-
-        step = sess.run(global_step)
-
-        if step % 1 == 0:
-            pred_, pred_rgb_, colorimage_, grayscale_rgb_, cost, merged_ = sess.run(
-                [pred, pred_rgb, colorimage, grayscale_rgb, loss, merged], feed_dict={phase_train: False, uv: 3})
-            print({
-                "step": step,
-                "cost": np.mean(cost)
-            })
-            if step % 1000 == 0:
-                summary_image = concat_images(grayscale_rgb_[0], pred_rgb_[0])
-                summary_image = concat_images(summary_image, colorimage_[0])
-                plt.imsave("summary/" + str(step) + "_0", summary_image)
-
-            sys.stdout.flush()
-            writer.add_summary(merged_, step)
-            writer.flush()
-        if step % 100000 == 99998:
-            save_path = saver.save(sess, "model.ckpt")
-            print("Model saved in file: %s" % save_path)
-            sys.stdout.flush()
-
-except tf.errors.OutOfRangeError:
-    print('Done training -- epoch limit reached')
-finally:
-    # When done, ask the threads to stop.
-    coord.request_stop()
-
-# Wait for threads to finish.
-coord.join(threads)
-sess.close()
+if __name__ == '__main__':
+    main()
